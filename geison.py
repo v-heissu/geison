@@ -37,31 +37,30 @@ def main():
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
-                # Bottoni per il download
-                col1, col2 = st.columns(2)
+                # Download CSV (sempre disponibile)
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Scarica CSV",
+                    data=csv,
+                    file_name="dati.csv",
+                    mime="text/csv"
+                )
                 
-                # Download Excel
-                with col1:
-                    excel_buffer = BytesIO()
-                    df.to_excel(excel_buffer, index=False)
-                    excel_data = excel_buffer.getvalue()
+                # Download Excel (con gestione errori)
+                try:
+                    import openpyxl
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False)
                     
                     st.download_button(
                         label="Scarica Excel",
-                        data=excel_data,
+                        data=buffer.getvalue(),
                         file_name="dati.xlsx",
                         mime="application/vnd.ms-excel"
                     )
-                
-                # Download CSV
-                with col2:
-                    csv = df.to_csv(index=False)
-                    st.download_button(
-                        label="Scarica CSV",
-                        data=csv,
-                        file_name="dati.csv",
-                        mime="text/csv"
-                    )
+                except ImportError:
+                    st.warning("La funzionalità Excel non è disponibile. Per favore usa il formato CSV.")
         else:
             st.warning("Per favore, inserisci un JSON valido")
 
