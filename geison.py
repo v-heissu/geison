@@ -3,10 +3,10 @@ import json
 import pandas as pd
 from io import BytesIO
 import re
-import time
 from typing import List, Dict, Union
 
 def clean_json_input(json_str: str) -> str:
+    """Pulisce l'input JSON rimuovendo dati extra e caratteri problematici"""
     json_str = json_str.strip().lstrip('\ufeff')
     
     try:
@@ -45,6 +45,7 @@ def clean_json_input(json_str: str) -> str:
         return json_str
 
 def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict:
+    """Appiattisce un oggetto JSON mantenendo una struttura pulita"""
     items = {}
     
     def _clean_key(k: str) -> str:
@@ -81,6 +82,7 @@ def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict
     return items
 
 def process_json_data(json_str: str) -> pd.DataFrame:
+    """Processa il JSON e lo converte in DataFrame"""
     cleaned_json = clean_json_input(json_str)
     
     try:
@@ -119,91 +121,76 @@ def process_json_data(json_str: str) -> pd.DataFrame:
     
     return df[ordered_cols]
 
-def show_download_progress():
-    """Mostra una barra di progresso durante il download"""
-    progress_placeholder = st.empty()
-    progress_bar = progress_placeholder.progress(0)
-    
-    for i in range(101):
-        time.sleep(0.01)  # Simulazione di elaborazione
-        progress_bar.progress(i)
-    
-    progress_placeholder.empty()
-
-def download_with_progress(df: pd.DataFrame, file_type: str) -> tuple:
-    """Prepara i dati per il download mostrando una progress bar"""
-    if file_type == 'csv':
-        data = df.to_csv(index=False)
-        mime = "text/csv"
-        file_name = "dati.csv"
-    else:  # excel
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        data = buffer.getvalue()
-        mime = "application/vnd.ms-excel"
-        file_name = "dati.xlsx"
-    
-    return data, mime, file_name
-
 def main():
     st.title("Convertitore JSON Universal Plus")
     
     with st.expander("ℹ️ Informazioni"):
         st.markdown("""
         Versione aggiornata che gestisce:
-        - JSON con dati extra
+        - JSON da file o testo
         - Strutture nidificate
         - LiveBlog updates
         - Dati malformattati
         """)
     
-    json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
+    # File upload
+    uploaded_file = st.file_uploader("Carica un file JSON", type=['json'])
+    
+    # Text input
+    json_input = st.text_area("...oppure incolla qui il tuo JSON:", height=200)
     
     if st.button("Converti"):
-        if json_input:
-            try:
-                # Process JSON
-                df = process_json_data(json_input)
+        try:
+            # Process either uploaded file or text input
+            if uploaded_file is not None:
+                json_str = uploaded_file.getvalue().decode('utf-8')
+            elif json_input:
+                json_str = json_input
+            else:
+                st.warning("Inserisci un JSON o carica un file")
+                return
                 
-                # Show preview
-                st.write("Anteprima della tabella:")
-                st.dataframe(df)
-                
-                col1, col2 = st.columns(2)
-                
-                # CSV download
-                csv_data, csv_mime, csv_filename = download_with_progress(df, 'csv')
-                col1.download_button(
-                    "📄 Scarica CSV",
-                    data=csv_data,
-                    file_name=csv_filename,
-                    mime=csv_mime,
-                    on_click=show_download_progress
-                )
-                
-                # Excel download
-                try:
-                    excel_data, excel_mime, excel_filename = download_with_progress(df, 'excel')
-                    col2.download_button(
-                        "📊 Scarica Excel",
-                        data=excel_data,
-                        file_name=excel_filename,
-                        mime=excel_mime,
-                        on_click=show_download_progress
-                    )
-                except Exception as e:
-                    st.warning("Export Excel non disponibile. Usa il CSV.")
-                    st.error(f"Errore Excel: {str(e)}")
-                
-                # Stats
-                with st.expander("📊 Dettagli"):
-                    st.write(f"Righe trovate: {len(df)}")
-                    st.write(f"Colonne: {', '.join(df.columns)}")
+            df = process_json_data(json_str)
             
-            except Exception as e:
-                st.error(f"Errore nell'elaborazione: {str(e)}")
-                st.code(json_input[:1000])
+            # Show preview
+            st.write("Anteprima della tabella:")
+            st.dataframe(df)
+            
+            col1, col2 = st.columns(2)
+            
+            # CSV download
+            csv = df.to_csv(index=False)
+            col1.download_button(
+                "📄 Scarica CSV",
+                data=csv,
+                file_name="dati.csv",
+                mime="text/csv"
+            )
+            
+            # Excel download
+            try:
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                
+                col2.download_button(
+                    "📊 Scarica Excel",
+                    data=buffer.getvalue(),
+                    file_name="dati.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
+            except Exception:
+                st.warning("Export Excel non disponibile. Usa il CSV.")
+            
+            # Stats
+            with st.expander("📊 Dettagli"):
+                st.write(f"Righe trovate: {len(df)}")
+                st.write(f"Colonne: {', '.join(df.columns)}")
+        
+        except Exception as e:
+            st.error(f"Errore nell'elaborazione: {str(e)}")
+            if 'json_str' in locals():
+                st.code(json_str[:1000])
 
 if __name__ == "__main__":
     main()
