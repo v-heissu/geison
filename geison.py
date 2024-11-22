@@ -3,103 +3,109 @@ import json
 import pandas as pd
 from io import BytesIO
 import re
-from typing import List, Dict, Union, Tuple
+from typing import List, Dict, Union
 
-def aggressive_pattern_extraction(text: str) -> List[Dict]:
+def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict:
     """
-    Estrae aggressivamente pattern che sembrano oggetti JSON
+    Appiattisce un oggetto JSON mantenendo una struttura pulita dei nomi delle colonne
     """
-    # Rimuovi caratteri problematici iniziali/finali
-    text = text.strip().lstrip('\ufeff').strip('[]')
+    items = {}
     
-    # Pattern più comune nei tuoi dati
-    base_pattern = r'{[^}]+}'
+    def _clean_key(k: str) -> str:
+        """Pulisce e normalizza i nomi delle chiavi"""
+        k = k.strip('_')
+        k = re.sub(r'[@\s]+', '_', k)
+        return k.lower()
     
-    # Trova tutti i potenziali oggetti JSON
-    potential_objects = re.finditer(base_pattern, text)
-    objects = []
-    
-    for match in potential_objects:
-        obj_text = match.group(0)
+    for k, v in obj.items():
+        clean_k = _clean_key(k)
+        new_key = f"{parent_key}{sep}{clean_k}" if parent_key else clean_k
         
-        # Estrai coppie chiave-valore
-        pairs = re.findall(r'"([^"]+)"\s*:\s*"([^"]+)"', obj_text)
-        if pairs:
-            obj = {}
-            for key, value in pairs:
-                obj[key] = value
-            if obj:  # Se abbiamo trovato almeno una coppia valida
-                objects.append(obj)
-    
-    # Se non troviamo oggetti, proviamo un approccio più aggressivo
-    if not objects:
-        # Cerca qualsiasi coppia chiave:valore
-        pairs = re.findall(r'["\']?([a-zA-Z@][a-zA-Z0-9_@]*)["\']?\s*:\s*["\']([^"\',}]+)["\']', text)
-        if pairs:
-            obj = {}
-            for key, value in pairs:
-                obj[key] = value
-            objects.append(obj)
-    
-    return objects
+        if isinstance(v, dict):
+            # Per address e altri oggetti annidati conosciuti, mantieni la struttura piatta
+            if k in ['address', 'geo']:
+                for sub_k, sub_v in v.items():
+                    sub_clean_k = _clean_key(sub_k)
+                    items[sub_clean_k] = sub_v
+            else:
+                items.update(flatten_json_object(v, new_key, sep=sep))
+        elif isinstance(v, list):
+            # Per liste, converti in stringa se sono dati semplici
+            if v and all(isinstance(x, (str, int, float)) for x in v):
+                items[new_key] = ', '.join(str(x) for x in v)
+            else:
+                for i, item in enumerate(v):
+                    if isinstance(item, dict):
+                        items.update(flatten_json_object(item, f"{new_key}{sep}{i}", sep=sep))
+        else:
+            items[new_key] = v
+            
+    return items
 
-def extract_nested_json(text: str) -> List[Dict]:
+def process_json_data(json_str: str) -> pd.DataFrame:
     """
-    Estrae JSON annidati dal testo
+    Processa il JSON e lo converte in DataFrame
     """
-    # Prima cerca oggetti JSON ben formati
-    json_pattern = r'({[^{}]*({[^{}]*})*[^{}]*})'
-    matches = re.finditer(json_pattern, text)
-    objects = []
+    data = json.loads(json_str)
     
-    for match in matches:
-        try:
-            obj = json.loads(match.group(0))
-            if isinstance(obj, dict):
-                objects.append(obj)
-        except:
-            # Se il parsing JSON fallisce, prova l'estrazione aggressiva
-            extracted = aggressive_pattern_extraction(match.group(0))
-            objects.extend(extracted)
+    # Gestisci diversi formati di input
+    if isinstance(data, dict):
+        if "items" in data:  # Formato con items e pagination
+            items = data["items"]
+        elif "liveBlogUpdate" in data:  # Formato liveblog
+            items = data["liveBlogUpdate"]
+        else:
+            items = [data]
+    elif isinstance(data, list):
+        items = data
+    else:
+        raise ValueError("Formato JSON non supportato")
     
-    # Se non troviamo nulla, prova l'estrazione aggressiva sull'intero testo
-    if not objects:
-        objects = aggressive_pattern_extraction(text)
+    # Appiattisci ogni oggetto
+    flattened_data = [flatten_json_object(item) for item in items]
     
-    return objects
+    # Crea DataFrame
+    df = pd.DataFrame(flattened_data)
+    
+    # Pulisci i dati
+    for col in df.columns:
+        if df[col].dtype == object:
+            # Decodifica HTML entities
+            df[col] = df[col].apply(lambda x: x.replace('&apos;', "'").replace('&quot;', '"') if isinstance(x, str) else x)
+    
+    # Riordina le colonne in modo logico
+    priority_columns = ['name', 'postalcode', 'addresslocality', 'streetaddress', 
+                       'addressregion', 'addresscountry', 'province', 'headline', 
+                       'articlebody', 'datepublished']
+    
+    # Ottieni tutte le colonne presenti
+    current_cols = list(df.columns)
+    # Ordina prima le colonne prioritarie (se presenti)
+    ordered_cols = [col for col in priority_columns if col in current_cols]
+    # Aggiungi le colonne rimanenti
+    ordered_cols.extend([col for col in current_cols if col not in ordered_cols])
+    
+    return df[ordered_cols]
 
 def main():
-    st.title("Convertitore JSON Ultra Smart")
+    st.title("Convertitore JSON Universal Plus")
     
-    with st.expander("ℹ️ Come funziona"):
+    with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        Convertitore avanzato che:
-        1. Cerca pattern JSON nel testo
-        2. Estrae aggressivamente coppie chiave-valore
-        3. Supporta strutture annidate
-        4. Gestisce formattazione non standard
+        Questo convertitore gestisce automaticamente:
+        - JSON con strutture annidate (address, geo, etc.)
+        - LiveBlog updates
+        - Array di oggetti
+        - Decodifica HTML entities
         """)
     
-    # Area input
-    json_input = st.text_area("Incolla qui il tuo testo:", height=200)
+    json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
     
     if st.button("Converti"):
         if json_input:
             try:
-                # Estrai i dati
-                extracted_data = extract_nested_json(json_input)
-                
-                if not extracted_data:
-                    st.error("Nessuna struttura dati valida trovata nel testo")
-                    st.code(json_input[:1000])
-                    return
-                
-                # Debug view
-                with st.expander("🔍 Struttura Estratta"):
-                    st.json(extracted_data)
-                
-                # Crea DataFrame
-                df = pd.DataFrame(extracted_data)
+                # Processa il JSON
+                df = process_json_data(json_input)
                 
                 # Mostra preview
                 st.write("Anteprima della tabella:")
@@ -132,26 +138,14 @@ def main():
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
-                # Mostra statistiche
-                with st.expander("📊 Statistiche"):
-                    st.write(f"Oggetti trovati: {len(extracted_data)}")
-                    if not df.empty:
-                        st.write(f"Colonne trovate: {list(df.columns)}")
-                        st.write("Esempi di valori:")
-                        for col in df.columns:
-                            st.write(f"- {col}: {df[col].iloc[0] if len(df) > 0 else 'N/A'}")
+                # Statistiche
+                with st.expander("📊 Dettagli"):
+                    st.write(f"Righe trovate: {len(df)}")
+                    st.write(f"Colonne: {', '.join(df.columns)}")
                 
             except Exception as e:
                 st.error(f"Errore nell'elaborazione: {str(e)}")
-                st.write("Testo problematico:")
                 st.code(json_input[:1000])
-                
-                # Mostra il parsing passo-passo
-                with st.expander("🔍 Debug Dettagliato"):
-                    st.write("Pattern trovati:")
-                    # Mostra i pattern trovati nel testo
-                    for pattern in re.finditer(r'{[^}]+}', json_input):
-                        st.code(pattern.group(0))
 
 if __name__ == "__main__":
     main()
