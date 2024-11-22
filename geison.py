@@ -4,109 +4,106 @@ import pandas as pd
 from io import BytesIO
 import re
 
-def fix_consecutive_objects(text: str) -> str:
+def extract_objects_from_text(text: str) -> str:
     """
-    Corregge oggetti JSON consecutivi convertendoli in un array
+    Estrae e formatta correttamente oggetti JSON da testo malformattato
     """
-    # Rimuove whitespace e caratteri non necessari
+    # Rimuove spazi e caratteri iniziali/finali
     text = text.strip().lstrip('\ufeff')
     
-    # Rimuove caratteri non JSON all'inizio
-    text = re.sub(r'^[^{\[]+', '', text)
-    
-    # Cerca di identificare oggetti JSON consecutivi
-    objects = []
-    brace_count = 0
-    current_obj = []
-    in_string = False
-    escape = False
-    
-    for char in text:
-        if escape:
-            escape = False
-            current_obj.append(char)
-            continue
+    # Se il testo inizia con '[', cerca di sistemare l'array
+    if text.startswith('['):
+        try:
+            # Trova tutti gli oggetti che iniziano con {@type
+            objects = re.finditer(r'{"@type":[^}]+}', text)
+            valid_objects = []
             
-        if char == '\\':
-            escape = True
-            current_obj.append(char)
-            continue
+            for obj in objects:
+                try:
+                    # Pulisci l'oggetto
+                    clean_obj = obj.group()
+                    # Verifica che sia un JSON valido
+                    json.loads(clean_obj)
+                    valid_objects.append(clean_obj)
+                except:
+                    continue
             
-        if char == '"' and not escape:
-            in_string = not in_string
-            current_obj.append(char)
+            if valid_objects:
+                return f"[{','.join(valid_objects)}]"
+        except:
+            pass
+    
+    # Trova tutti i pattern che sembrano oggetti JSON
+    object_pattern = r'{[^}]+}'
+    potential_objects = re.finditer(object_pattern, text)
+    
+    valid_objects = []
+    for obj in potential_objects:
+        try:
+            # Pulisci l'oggetto
+            clean_obj = obj.group()
+            # Sistema le citazioni
+            clean_obj = re.sub(r'([{,]\s*)([a-zA-Z@_][a-zA-Z0-9@_]*)\s*:', r'\1"\2":', clean_obj)
+            # Sostituisci citazioni singole con doppie
+            clean_obj = clean_obj.replace("'", '"')
+            # Verifica che sia un JSON valido
+            json.loads(clean_obj)
+            valid_objects.append(clean_obj)
+        except:
             continue
-            
-        if not in_string:
-            if char == '{':
-                brace_count += 1
-                if brace_count == 1 and current_obj:  # Nuovo oggetto inizia
-                    objects.append(''.join(current_obj))
-                    current_obj = []
-                current_obj.append(char)
-            elif char == '}':
-                brace_count -= 1
-                current_obj.append(char)
-                if brace_count == 0:  # Oggetto completo
-                    objects.append(''.join(current_obj))
-                    current_obj = []
-            else:
-                current_obj.append(char)
-        else:
-            current_obj.append(char)
     
-    if current_obj:
-        objects.append(''.join(current_obj))
+    if valid_objects:
+        return f"[{','.join(valid_objects)}]"
     
-    # Rimuove oggetti vuoti e spazi
-    objects = [obj.strip() for obj in objects if obj.strip()]
+    raise ValueError("Nessun oggetto JSON valido trovato nel testo")
+
+def clean_json_text(text: str) -> str:
+    """
+    Pulisce e normalizza il testo JSON
+    """
+    # Sistema le citazioni delle proprietà
+    text = re.sub(r'([{,]\s*)([a-zA-Z@_][a-zA-Z0-9@_]*)\s*:', r'\1"\2":', text)
     
-    # Converte in array JSON se ci sono più oggetti
-    if len(objects) > 1:
-        return f"[{','.join(objects)}]"
-    elif objects:
-        return objects[0]
+    # Sistema le citazioni dei valori
+    text = re.sub(r':\s*"([^"]*)"', r':"\1"', text)
+    text = re.sub(r':\s*\'([^\']*)\'', r':"\1"', text)
+    
+    # Sistema i valori speciali
+    text = re.sub(r':\s*(null|true|false)\b', lambda m: f':{m.group(1).lower()}', text, flags=re.IGNORECASE)
+    
+    # Rimuove spazi extra
+    text = re.sub(r'\s+', ' ', text)
+    
     return text
 
-def ensure_json_format(text: str) -> str:
+def parse_json_safely(text: str) -> dict:
     """
-    Assicura che il testo sia in formato JSON valido
+    Tenta di parsare il JSON in modo sicuro con multipli tentativi
     """
-    # Prima sistema gli oggetti consecutivi
-    text = fix_consecutive_objects(text)
-    
-    # Fix citazioni proprietà
-    def fix_property_quotes(match):
-        return f'"{match.group(1)}":'
-    
-    # Trova proprietà non quotate o con quote singole e le corregge
-    text = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', fix_property_quotes, text)
-    text = re.sub(r"'([^']+)'\s*:", fix_property_quotes, text)
-    
-    # Sostituisce citazioni multiple con singole
-    text = re.sub(r'"{2,}', '"', text)
-    text = re.sub(r"'{2,}", "'", text)
-    
-    # Converte citazioni singole in doppie per i valori
-    text = re.sub(r":\s*'([^']*)'", r': "\1"', text)
-    
-    # Corregge valori speciali
-    text = re.sub(r':\s*null\b', ': null', text, flags=re.IGNORECASE)
-    text = re.sub(r':\s*true\b', ': true', text, flags=re.IGNORECASE)
-    text = re.sub(r':\s*false\b', ': false', text, flags=re.IGNORECASE)
-    
-    return text
+    try:
+        # Prima prova: parse diretto
+        return json.loads(text)
+    except:
+        try:
+            # Seconda prova: pulizia e parse
+            cleaned = clean_json_text(text)
+            return json.loads(cleaned)
+        except:
+            # Terza prova: estrazione oggetti
+            extracted = extract_objects_from_text(text)
+            return json.loads(extracted)
 
 def main():
-    st.title("Convertitore JSON Super Plus")
+    st.title("Convertitore JSON Pro Max")
     
     with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        Questa versione gestisce:
-        - Oggetti JSON consecutivi
-        - Proprietà non correttamente quotate
-        - Mix di stili di citazione
+        Versione avanzata che gestisce:
         - JSON malformattato
+        - Array incompleti
+        - Oggetti consecutivi
+        - Citazioni miste
+        - Strutture complesse
         """)
     
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
@@ -114,23 +111,16 @@ def main():
     if st.button("Converti"):
         if json_input:
             try:
-                # Step 1: Sistema gli oggetti consecutivi e normalizza
-                cleaned_json = ensure_json_format(json_input)
+                # Step 1: Parse sicuro
+                data = parse_json_safely(json_input)
                 
-                # Debug view
-                with st.expander("🔍 JSON Normalizzato"):
-                    st.code(cleaned_json)
-                
-                # Step 2: Parse
-                data = json.loads(cleaned_json)
-                
-                # Step 3: Converti in DataFrame
+                # Step 2: Converti in DataFrame
                 if isinstance(data, list):
                     df = pd.json_normalize(data)
                 else:
                     df = pd.json_normalize([data])
                 
-                # Step 4: Output
+                # Mostra anteprima
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
@@ -161,9 +151,18 @@ def main():
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
+                # Debug info
+                with st.expander("🔍 Debug Info"):
+                    st.write("JSON Structure:")
+                    st.json(data)
+                    
+                    st.write("Column Types:")
+                    st.write(df.dtypes.to_dict())
+                
             except Exception as e:
-                st.error(f"Errore: {str(e)}")
-                st.code(cleaned_json[:1000] if 'cleaned_json' in locals() else json_input[:1000])
+                st.error(f"Errore nel processing: {str(e)}")
+                st.write("Debug del testo di input:")
+                st.code(json_input[:1000])
 
 if __name__ == "__main__":
     main()
