@@ -5,14 +5,80 @@ from io import BytesIO
 from typing import Union, List, Dict
 import re
 
+def extract_valid_json(text: str) -> str:
+    """
+    Estrae il primo JSON valido dal testo, ignorando caratteri non validi
+    """
+    # Cerca l'inizio di un oggetto o array JSON
+    start_patterns = ['{', '[']
+    end_patterns = ['}', ']']
+    
+    # Trova la prima occorrenza di un pattern di inizio valido
+    starts = [(text.find(p), p) for p in start_patterns if text.find(p) != -1]
+    if not starts:
+        raise ValueError("Nessun JSON valido trovato nel testo")
+    
+    start_pos, start_char = min(starts, key=lambda x: x[0])
+    
+    # Determina il carattere di chiusura corrispondente
+    end_char = end_patterns[start_patterns.index(start_char)]
+    
+    # Inizializza il contatore per le parentesi
+    count = 0
+    in_string = False
+    escape = False
+    
+    # Cerca la fine corrispondente
+    for i in range(start_pos, len(text)):
+        char = text[i]
+        
+        if escape:
+            escape = False
+            continue
+            
+        if char == '\\':
+            escape = True
+            continue
+            
+        if char == '"' and not escape:
+            in_string = not in_string
+            continue
+            
+        if not in_string:
+            if char == start_char:
+                count += 1
+            elif char == end_char:
+                count -= 1
+                if count == 0:
+                    # Abbiamo trovato la fine del JSON
+                    return text[start_pos:i+1]
+    
+    raise ValueError("JSON non valido o incompleto")
+
+def clean_json_text(text: str) -> str:
+    """
+    Pulisce il testo del JSON da caratteri problematici
+    """
+    # Rimuove BOM e whitespace
+    text = text.strip().lstrip('\ufeff')
+    
+    # Rimuove commenti se presenti
+    text = re.sub(r'//.*?\n|/\*.*?\*/', '', text, flags=re.S)
+    
+    # Prova a estrarre il JSON valido
+    try:
+        return extract_valid_json(text)
+    except ValueError as e:
+        st.error(f"Errore durante la pulizia del JSON: {str(e)}")
+        return text
+
 def flatten_complete(obj: Union[Dict, List, str], parent_key: str = '', sep: str = '_') -> Dict:
     """
-    Appiattisce completamente qualsiasi struttura JSON, inclusi i JSON nidificati nelle stringhe
+    Appiattisce completamente qualsiasi struttura JSON
     """
     items = {}
     
     def try_parse_json(value):
-        """Prova a parsare una stringa come JSON"""
         if isinstance(value, str):
             try:
                 return json.loads(value)
@@ -29,7 +95,6 @@ def flatten_complete(obj: Union[Dict, List, str], parent_key: str = '', sep: str
                 items.update(flatten_complete(v, new_key, sep=sep))
             else:
                 items[new_key] = v
-                
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
             v = try_parse_json(v)
@@ -45,60 +110,41 @@ def flatten_complete(obj: Union[Dict, List, str], parent_key: str = '', sep: str
             items.update(flatten_complete(obj, parent_key, sep=sep))
         else:
             items[parent_key] = obj
-            
+    
     return items
 
-def clean_column_name(name: str) -> str:
-    """Pulisce e semplifica i nomi delle colonne"""
-    # Rimuove caratteri speciali e spazi
-    name = re.sub(r'[^\w\s-]', '', str(name))
-    # Sostituisce spazi con underscore
-    name = re.sub(r'[-\s]+', '_', name)
-    # Rimuove underscore multipli
-    name = re.sub(r'_+', '_', name)
-    return name.lower().strip('_')
-
-def create_dataframe(data: Union[Dict, List]) -> pd.DataFrame:
-    """
-    Crea un DataFrame appiattito da qualsiasi struttura JSON
-    """
-    if isinstance(data, list):
-        # Se è una lista di oggetti, appiattisci ogni elemento
-        flat_data = [flatten_complete(item) for item in data]
-    else:
-        # Se è un oggetto singolo, appiattiscilo
-        flat_data = [flatten_complete(data)]
-    
-    # Crea il DataFrame
-    df = pd.DataFrame(flat_data)
-    
-    # Pulisci i nomi delle colonne
-    df.columns = [clean_column_name(col) for col in df.columns]
-    
-    return df
-
 def main():
-    st.title("Convertitore JSON Avanzato")
+    st.title("Convertitore JSON Universal Plus")
     
-    with st.expander("ℹ️ Informazioni"):
+    with st.expander("ℹ️ Come usare"):
         st.markdown("""
-        Questo convertitore:
-        - Appiattisce completamente qualsiasi struttura JSON
-        - Gestisce JSON nidificati in stringhe
-        - Pulisce e semplifica i nomi delle colonne
-        - Esporta in CSV o Excel
+        1. Incolla il tuo JSON (anche se contiene errori)
+        2. Il sistema:
+           - Rimuoverà automaticamente caratteri non validi
+           - Estrarrà il primo JSON valido trovato
+           - Convertirà tutto in formato tabellare
+        3. Scarica i risultati in CSV o Excel
         """)
     
+    # Area di testo per il JSON
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
     
     if st.button("Converti"):
         if json_input:
             try:
-                # Parse del JSON
-                data = json.loads(json_input)
+                # Pulizia e estrazione del JSON valido
+                cleaned_json = clean_json_text(json_input)
                 
-                # Creazione DataFrame completamente appiattito
-                df = create_dataframe(data)
+                # Parse del JSON pulito
+                data = json.loads(cleaned_json)
+                
+                # Appiattimento e conversione in DataFrame
+                if isinstance(data, list):
+                    flat_data = [flatten_complete(item) for item in data]
+                else:
+                    flat_data = [flatten_complete(data)]
+                    
+                df = pd.DataFrame(flat_data)
                 
                 # Mostra anteprima
                 st.write("Anteprima della tabella:")
@@ -112,7 +158,7 @@ def main():
                 col1.download_button(
                     "📄 Scarica CSV",
                     data=csv,
-                    file_name="dati_appiattiti.csv",
+                    file_name="dati.csv",
                     mime="text/csv"
                 )
                 
@@ -125,21 +171,19 @@ def main():
                     col2.download_button(
                         "📊 Scarica Excel",
                         data=buffer.getvalue(),
-                        file_name="dati_appiattiti.xlsx",
+                        file_name="dati.xlsx",
                         mime="application/vnd.ms-excel"
                     )
-                except ImportError:
+                except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
-                # Statistiche
-                with st.expander("📊 Dettagli"):
-                    st.write("Struttura dei dati:")
-                    for col in df.columns:
-                        st.write(f"- {col}: {df[col].dtype}")
-                    
+                # Mostra JSON pulito in caso di debug
+                with st.expander("🔍 Debug"):
+                    st.code(cleaned_json)
+                
             except json.JSONDecodeError as e:
                 st.error(f"Errore nel parsing JSON: {str(e)}")
-                st.info("Verifica che il JSON sia valido")
+                st.code(cleaned_json[:500] + "..." if len(cleaned_json) > 500 else cleaned_json)
             except Exception as e:
                 st.error(f"Errore: {str(e)}")
 
