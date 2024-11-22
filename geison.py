@@ -6,42 +6,52 @@ import re
 from typing import List, Dict, Union
 
 def clean_json_input(json_str: str) -> str:
-    """Pulisce l'input JSON rimuovendo dati extra e caratteri problematici"""
+    """Pulisce l'input JSON mantenendo tutti i record"""
     json_str = json_str.strip().lstrip('\ufeff')
     
     try:
-        start_idx = json_str.find('{')
-        if start_idx == -1:
-            return json_str
-            
-        count = 0
-        in_string = False
-        escape = False
-        
-        for i, char in enumerate(json_str[start_idx:]):
-            if escape:
-                escape = False
-                continue
-                
-            if char == '\\':
-                escape = True
-                continue
-                
-            if char == '"' and not escape:
-                in_string = not in_string
-                continue
-                
-            if not in_string:
-                if char == '{':
-                    count += 1
-                elif char == '}':
-                    count -= 1
-                    if count == 0:
-                        return json_str[start_idx:start_idx + i + 1]
-        
+        json.loads(json_str)
         return json_str
-    except Exception as e:
-        st.error(f"Errore nella pulizia del JSON: {str(e)}")
+    except:
+        try:
+            start_idx = json_str.find('{')
+            if start_idx == -1:
+                return json_str
+            
+            count = 0
+            in_string = False
+            escape = False
+            last_closing = -1
+            
+            for i, char in enumerate(json_str[start_idx:]):
+                if escape:
+                    escape = False
+                    continue
+                
+                if char == '\\':
+                    escape = True
+                    continue
+                
+                if char == '"' and not escape:
+                    in_string = not in_string
+                    continue
+                
+                if not in_string:
+                    if char == '{':
+                        count += 1
+                    elif char == '}':
+                        count -= 1
+                        if count == 0:
+                            last_closing = i
+            
+            if last_closing != -1:
+                complete_json = json_str[start_idx:start_idx + last_closing + 1]
+                json.loads(complete_json)
+                return complete_json
+            
+        except Exception as e:
+            st.error(f"Errore nella pulizia del JSON: {str(e)}")
+        
         return json_str
 
 def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict:
