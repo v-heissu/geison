@@ -2,107 +2,148 @@ import streamlit as st
 import json
 import pandas as pd
 from io import BytesIO
+from typing import Union, List, Dict
+import re
 
-def flatten_json(nested_json):
+def flatten_dict(d: Union[Dict, List], parent_key: str = '', sep: str = '_') -> Dict:
     """
-    Appiattisce un JSON annidata in una struttura piatta.
-    Per esempio, address.postalCode diventa semplicemente postalCode
+    Appiattisce un dizionario o una lista annidata in un dizionario piatto.
+    Gestisce liste, dizionari annidati e valori semplici.
     """
-    flattened = []
+    items = []
     
-    for item in nested_json['items']:
-        flat_item = {}
-        # Aggiungi l'ID
-        flat_item['_id'] = item['_id']
-        
-        # Aggiungi i campi dell'indirizzo
-        if 'address' in item:
-            for key, value in item['address'].items():
-                flat_item[key] = value
-                
-        # Aggiungi il placeId da geo
-        if 'geo' in item and 'placeId' in item['geo']:
-            flat_item['placeId'] = item['geo']['placeId']
+    if isinstance(d, dict):
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
             
-        # Aggiungi altri campi a livello root
-        for key, value in item.items():
-            if key not in ['_id', 'address', 'geo']:
-                flat_item[key] = value
+            if isinstance(v, (dict, list)):
+                items.extend(flatten_dict(v, new_key, sep=sep).items())
+            else:
+                items.append((new_key, v))
                 
-        flattened.append(flat_item)
-    
-    return flattened
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
+            
+            if isinstance(v, (dict, list)):
+                items.extend(flatten_dict(v, new_key, sep=sep).items())
+            else:
+                items.append((new_key, v))
+    else:
+        items.append((parent_key, d))
+        
+    return dict(items)
 
-def convert_json_to_df(json_str):
-    try:
-        # Converti la stringa JSON in un dizionario Python
-        data = json.loads(json_str)
-        
-        # Appiattisci la struttura JSON
-        flattened_data = flatten_json(data)
-        
-        # Converti in DataFrame
-        df = pd.DataFrame(flattened_data)
-        
-        # Riorganizza le colonne in un ordine più logico
-        desired_order = [
-            '_id', 'postalCode', 'addressLocality', 'streetAddress',
-            'addressRegion', 'addressCountry', 'province', 'placeId',
-            'name', 'text_en', 'updatedAt'
-        ]
-        
-        # Filtra solo le colonne che esistono nel DataFrame
-        columns = [col for col in desired_order if col in df.columns]
-        # Aggiungi eventuali colonne rimanenti alla fine
-        remaining_columns = [col for col in df.columns if col not in desired_order]
-        columns.extend(remaining_columns)
-        
-        return df[columns]
+def smart_flatten(data: Union[Dict, List]) -> pd.DataFrame:
+    """
+    Converte intelligentemente i dati in un DataFrame, 
+    cercando di mantenere la struttura più logica possibile.
+    """
+    # Se è una lista di dizionari, prova prima la conversione diretta
+    if isinstance(data, list) and all(isinstance(x, dict) for x in data):
+        try:
+            return pd.DataFrame(data)
+        except:
+            pass
     
-    except Exception as e:
-        st.error(f"Errore nella conversione del JSON: {str(e)}")
-        return None
+    # Se è un dizionario con una chiave che contiene una lista di dizionari
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, list) and all(isinstance(x, dict) for x in value):
+                try:
+                    return pd.DataFrame(value)
+                except:
+                    continue
+    
+    # Se i metodi precedenti falliscono, appiattisci completamente
+    flattened = flatten_dict(data)
+    return pd.DataFrame([flattened])
+
+def clean_json(json_str: str) -> str:
+    """Pulisce il JSON da potenziali problemi comuni"""
+    # Rimuove BOM se presente
+    json_str = json_str.strip().lstrip('\ufeff')
+    
+    # Gestisce le citazioni singole
+    json_str = re.sub(r"(?<!\\)'", '"', json_str)
+    
+    # Gestisce i caratteri di escape
+    json_str = json_str.replace('\n', ' ').replace('\r', ' ')
+    
+    return json_str
 
 def main():
-    st.title("Convertitore JSON in Tabella")
+    st.title("Convertitore JSON Universale")
+    
+    with st.expander("ℹ️ Informazioni sul convertitore"):
+        st.markdown("""
+        Questo convertitore può gestire:
+        - JSON semplici e complessi
+        - Liste di oggetti
+        - Oggetti annidati
+        - Strutture miste
+        
+        Prova ad estrarre automaticamente la struttura tabellare più logica dai dati.
+        """)
     
     # Area di testo per incollare il JSON
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
     
-    if st.button("Converti"):
-        if json_input:
-            df = convert_json_to_df(json_input)
+    cols = st.columns(2)
+    convert_button = cols[0].button("Converti")
+    
+    if convert_button and json_input:
+        try:
+            # Pulisci e analizza il JSON
+            cleaned_json = clean_json(json_input)
+            data = json.loads(cleaned_json)
             
-            if df is not None:
-                # Mostra la tabella
-                st.write("Anteprima della tabella:")
-                st.dataframe(df)
+            # Converti in DataFrame
+            df = smart_flatten(data)
+            
+            # Mostra anteprima
+            st.write("Anteprima della tabella:")
+            st.dataframe(df)
+            
+            # Bottoni per il download
+            col1, col2 = st.columns(2)
+            
+            # Download CSV
+            csv = df.to_csv(index=False)
+            col1.download_button(
+                label="📄 Scarica CSV",
+                data=csv,
+                file_name="dati_convertiti.csv",
+                mime="text/csv"
+            )
+            
+            # Download Excel
+            try:
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
                 
-                # Download CSV
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="Scarica CSV",
-                    data=csv,
-                    file_name="dati.csv",
-                    mime="text/csv"
+                col2.download_button(
+                    label="📊 Scarica Excel",
+                    data=buffer.getvalue(),
+                    file_name="dati_convertiti.xlsx",
+                    mime="application/vnd.ms-excel"
                 )
-                
-                # Download Excel
-                try:
-                    buffer = BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        df.to_excel(writer, index=False)
-                    
-                    st.download_button(
-                        label="Scarica Excel",
-                        data=buffer.getvalue(),
-                        file_name="dati.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
-                except ImportError:
-                    st.warning("La funzionalità Excel non è disponibile. Per favore usa il formato CSV.")
-        else:
-            st.warning("Per favore, inserisci un JSON valido")
+            except Exception as e:
+                st.warning("Export Excel non disponibile. Usa il formato CSV.")
+            
+            # Mostra statistiche
+            with st.expander("📊 Statistiche dei dati"):
+                st.write(f"Numero di righe: {len(df)}")
+                st.write(f"Numero di colonne: {len(df.columns)}")
+                st.write("Colonne trovate:", list(df.columns))
+        
+        except json.JSONDecodeError as e:
+            st.error(f"Errore nella decodifica del JSON: {str(e)}")
+            st.info("Suggerimento: Verifica che il JSON sia valido e ben formattato")
+        except Exception as e:
+            st.error(f"Errore durante la conversione: {str(e)}")
+            st.info("Prova a verificare la struttura del tuo JSON")
 
 if __name__ == "__main__":
     main()
