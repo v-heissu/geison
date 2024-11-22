@@ -4,18 +4,76 @@ import pandas as pd
 from io import BytesIO
 import re
 
-def ensure_json_format(text: str) -> str:
+def fix_consecutive_objects(text: str) -> str:
     """
-    Assicura che il testo sia in formato JSON valido
+    Corregge oggetti JSON consecutivi convertendoli in un array
     """
-    # Rimuove BOM e whitespace
+    # Rimuove whitespace e caratteri non necessari
     text = text.strip().lstrip('\ufeff')
     
     # Rimuove caratteri non JSON all'inizio
     text = re.sub(r'^[^{\[]+', '', text)
     
-    # Rimuove caratteri non JSON alla fine
-    text = re.sub(r'[^}\]]+$', '', text)
+    # Cerca di identificare oggetti JSON consecutivi
+    objects = []
+    brace_count = 0
+    current_obj = []
+    in_string = False
+    escape = False
+    
+    for char in text:
+        if escape:
+            escape = False
+            current_obj.append(char)
+            continue
+            
+        if char == '\\':
+            escape = True
+            current_obj.append(char)
+            continue
+            
+        if char == '"' and not escape:
+            in_string = not in_string
+            current_obj.append(char)
+            continue
+            
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+                if brace_count == 1 and current_obj:  # Nuovo oggetto inizia
+                    objects.append(''.join(current_obj))
+                    current_obj = []
+                current_obj.append(char)
+            elif char == '}':
+                brace_count -= 1
+                current_obj.append(char)
+                if brace_count == 0:  # Oggetto completo
+                    objects.append(''.join(current_obj))
+                    current_obj = []
+            else:
+                current_obj.append(char)
+        else:
+            current_obj.append(char)
+    
+    if current_obj:
+        objects.append(''.join(current_obj))
+    
+    # Rimuove oggetti vuoti e spazi
+    objects = [obj.strip() for obj in objects if obj.strip()]
+    
+    # Converte in array JSON se ci sono più oggetti
+    if len(objects) > 1:
+        return f"[{','.join(objects)}]"
+    elif objects:
+        return objects[0]
+    return text
+
+def ensure_json_format(text: str) -> str:
+    """
+    Assicura che il testo sia in formato JSON valido
+    """
+    # Prima sistema gli oggetti consecutivi
+    text = fix_consecutive_objects(text)
     
     # Fix citazioni proprietà
     def fix_property_quotes(match):
@@ -39,67 +97,16 @@ def ensure_json_format(text: str) -> str:
     
     return text
 
-def smart_json_loads(text: str) -> dict:
-    """
-    Tenta di caricare il JSON in modo intelligente, provando diverse correzioni
-    """
-    text = ensure_json_format(text)
-    
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        # Se fallisce, prova a correggere ulteriormente
-        st.error(f"Errore nel parsing iniziale: {str(e)}")
-        st.write("Tentativo di correzione automatica...")
-        
-        # Rimuove virgole trailing
-        text = re.sub(r',(\s*[}\]])', r'\1', text)
-        
-        # Aggiunge virgolette mancanti intorno ai valori
-        text = re.sub(r':\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}])', r': "\1"\2', text)
-        
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Impossibile correggere il JSON: {str(e)}\n\nJSON pulito:\n{text}")
-
-def flatten_json(obj, parent_key='', sep='_'):
-    """
-    Appiattisce un oggetto JSON in un dizionario singolo livello
-    """
-    items = {}
-    
-    def _flatten(obj, parent_key='', sep='_'):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                new_key = f"{parent_key}{sep}{k}" if parent_key else k
-                if isinstance(v, (dict, list)):
-                    _flatten(v, new_key, sep=sep)
-                else:
-                    items[new_key] = v
-        elif isinstance(obj, list):
-            for i, v in enumerate(obj):
-                new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
-                if isinstance(v, (dict, list)):
-                    _flatten(v, new_key, sep=sep)
-                else:
-                    items[new_key] = v
-        else:
-            items[parent_key] = obj
-    
-    _flatten(obj, parent_key, sep)
-    return items
-
 def main():
-    st.title("Convertitore JSON Super")
+    st.title("Convertitore JSON Super Plus")
     
     with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        Questa versione gestisce automaticamente:
-        - Proprietà senza virgolette
-        - Mix di citazioni singole e doppie
+        Questa versione gestisce:
+        - Oggetti JSON consecutivi
+        - Proprietà non correttamente quotate
+        - Mix di stili di citazione
         - JSON malformattato
-        - Valori non standard
         """)
     
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
@@ -107,7 +114,7 @@ def main():
     if st.button("Converti"):
         if json_input:
             try:
-                # Step 1: Pulisci e normalizza
+                # Step 1: Sistema gli oggetti consecutivi e normalizza
                 cleaned_json = ensure_json_format(json_input)
                 
                 # Debug view
@@ -115,15 +122,13 @@ def main():
                     st.code(cleaned_json)
                 
                 # Step 2: Parse
-                data = smart_json_loads(cleaned_json)
+                data = json.loads(cleaned_json)
                 
-                # Step 3: Flatten e converti
+                # Step 3: Converti in DataFrame
                 if isinstance(data, list):
-                    flat_data = [flatten_json(item) for item in data]
+                    df = pd.json_normalize(data)
                 else:
-                    flat_data = [flatten_json(data)]
-                
-                df = pd.DataFrame(flat_data)
+                    df = pd.json_normalize([data])
                 
                 # Step 4: Output
                 st.write("Anteprima della tabella:")
@@ -155,12 +160,6 @@ def main():
                     )
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
-                
-                # Statistiche
-                with st.expander("📊 Dettagli"):
-                    st.write("Struttura dei dati:")
-                    for col in df.columns:
-                        st.write(f"- {col}: {df[col].dtype}")
                 
             except Exception as e:
                 st.error(f"Errore: {str(e)}")
