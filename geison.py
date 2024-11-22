@@ -4,47 +4,64 @@ import pandas as pd
 from io import BytesIO
 import re
 
-def fix_quotes(text: str) -> str:
+def ensure_json_format(text: str) -> str:
     """
-    Corregge i problemi di citazione nel JSON
+    Assicura che il testo sia in formato JSON valido
     """
     # Rimuove BOM e whitespace
     text = text.strip().lstrip('\ufeff')
     
-    # Fix per citazioni multiple
-    text = re.sub(r'"{2,}', '"', text)  # Sostituisce citazioni multiple con singole
-    text = re.sub(r"'{2,}", "'", text)  # Sostituisce apostrofi multipli con singoli
-    
-    # Gestisce il caso di citazioni alternate
-    text = re.sub(r'"([^"]*)"([^"]*)"', r'"\1\\"\2"', text)
-    
-    # Rimuove caratteri non-JSON all'inizio
+    # Rimuove caratteri non JSON all'inizio
     text = re.sub(r'^[^{\[]+', '', text)
     
-    # Rimuove caratteri non-JSON alla fine
+    # Rimuove caratteri non JSON alla fine
     text = re.sub(r'[^}\]]+$', '', text)
     
-    return text
-
-def normalize_json(text: str) -> str:
-    """
-    Normalizza il JSON rimuovendo problemi comuni
-    """
-    # Rimuove caratteri di controllo
-    text = ''.join(ch for ch in text if ch >= ' ')
+    # Fix citazioni proprietà
+    def fix_property_quotes(match):
+        return f'"{match.group(1)}":'
     
-    # Corregge le citazioni
-    text = fix_quotes(text)
+    # Trova proprietà non quotate o con quote singole e le corregge
+    text = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', fix_property_quotes, text)
+    text = re.sub(r"'([^']+)'\s*:", fix_property_quotes, text)
     
-    # Corregge i valori null/None
+    # Sostituisce citazioni multiple con singole
+    text = re.sub(r'"{2,}', '"', text)
+    text = re.sub(r"'{2,}", "'", text)
+    
+    # Converte citazioni singole in doppie per i valori
+    text = re.sub(r":\s*'([^']*)'", r': "\1"', text)
+    
+    # Corregge valori speciali
     text = re.sub(r':\s*null\b', ': null', text, flags=re.IGNORECASE)
-    text = re.sub(r':\s*none\b', ': null', text, flags=re.IGNORECASE)
-    
-    # Corregge i booleani
     text = re.sub(r':\s*true\b', ': true', text, flags=re.IGNORECASE)
     text = re.sub(r':\s*false\b', ': false', text, flags=re.IGNORECASE)
     
     return text
+
+def smart_json_loads(text: str) -> dict:
+    """
+    Tenta di caricare il JSON in modo intelligente, provando diverse correzioni
+    """
+    text = ensure_json_format(text)
+    
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # Se fallisce, prova a correggere ulteriormente
+        st.error(f"Errore nel parsing iniziale: {str(e)}")
+        st.write("Tentativo di correzione automatica...")
+        
+        # Rimuove virgole trailing
+        text = re.sub(r',(\s*[}\]])', r'\1', text)
+        
+        # Aggiunge virgolette mancanti intorno ai valori
+        text = re.sub(r':\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}])', r': "\1"\2', text)
+        
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Impossibile correggere il JSON: {str(e)}\n\nJSON pulito:\n{text}")
 
 def flatten_json(obj, parent_key='', sep='_'):
     """
@@ -52,59 +69,55 @@ def flatten_json(obj, parent_key='', sep='_'):
     """
     items = {}
     
-    def add_item(key, value):
-        """Aggiunge un item al dizionario risultante"""
-        if isinstance(value, (dict, list)):
-            items.update(flatten_json(value, key, sep))
+    def _flatten(obj, parent_key='', sep='_'):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                new_key = f"{parent_key}{sep}{k}" if parent_key else k
+                if isinstance(v, (dict, list)):
+                    _flatten(v, new_key, sep=sep)
+                else:
+                    items[new_key] = v
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
+                if isinstance(v, (dict, list)):
+                    _flatten(v, new_key, sep=sep)
+                else:
+                    items[new_key] = v
         else:
-            items[key] = value
+            items[parent_key] = obj
     
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            new_key = f"{parent_key}{sep}{key}" if parent_key else key
-            add_item(new_key, value)
-    elif isinstance(obj, list):
-        for i, value in enumerate(obj):
-            new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
-            add_item(new_key, value)
-    else:
-        items[parent_key] = obj
-        
+    _flatten(obj, parent_key, sep)
     return items
 
 def main():
-    st.title("Convertitore JSON Ultra")
+    st.title("Convertitore JSON Super")
     
     with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        Questo convertitore gestisce:
-        - Problemi di citazione
+        Questa versione gestisce automaticamente:
+        - Proprietà senza virgolette
+        - Mix di citazioni singole e doppie
         - JSON malformattato
-        - Strutture annidate
-        - Caratteri speciali
+        - Valori non standard
         """)
     
-    # Area di testo per il JSON
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
     
     if st.button("Converti"):
         if json_input:
             try:
-                # Normalizza e pulisci il JSON
-                cleaned_json = normalize_json(json_input)
+                # Step 1: Pulisci e normalizza
+                cleaned_json = ensure_json_format(json_input)
                 
-                # Debug view del JSON pulito
-                with st.expander("🔍 JSON Pulito"):
+                # Debug view
+                with st.expander("🔍 JSON Normalizzato"):
                     st.code(cleaned_json)
                 
-                # Parse del JSON
-                try:
-                    data = json.loads(cleaned_json)
-                except Exception as e:
-                    st.error(f"Errore nel parsing JSON pulito: {str(e)}")
-                    st.stop()
+                # Step 2: Parse
+                data = smart_json_loads(cleaned_json)
                 
-                # Converti in DataFrame
+                # Step 3: Flatten e converti
                 if isinstance(data, list):
                     flat_data = [flatten_json(item) for item in data]
                 else:
@@ -112,7 +125,7 @@ def main():
                 
                 df = pd.DataFrame(flat_data)
                 
-                # Mostra preview
+                # Step 4: Output
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
@@ -144,14 +157,14 @@ def main():
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
                 # Statistiche
-                with st.expander("📊 Statistiche"):
-                    st.write(f"Righe: {len(df)}")
-                    st.write(f"Colonne: {len(df.columns)}")
-                    st.write("Tipi di dati:", df.dtypes.to_dict())
+                with st.expander("📊 Dettagli"):
+                    st.write("Struttura dei dati:")
+                    for col in df.columns:
+                        st.write(f"- {col}: {df[col].dtype}")
                 
             except Exception as e:
                 st.error(f"Errore: {str(e)}")
-                st.code(json_input[:500])
+                st.code(cleaned_json[:1000] if 'cleaned_json' in locals() else json_input[:1000])
 
 if __name__ == "__main__":
     main()
