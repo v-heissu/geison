@@ -5,6 +5,52 @@ from io import BytesIO
 import re
 from typing import List, Dict, Union
 
+def clean_json_input(json_str: str) -> str:
+    """
+    Pulisce l'input JSON rimuovendo dati extra e caratteri problematici
+    """
+    # Rimuove BOM e whitespace
+    json_str = json_str.strip().lstrip('\ufeff')
+    
+    # Cerca di trovare il primo oggetto JSON valido
+    try:
+        # Trova l'inizio dell'oggetto JSON
+        start_idx = json_str.find('{')
+        if start_idx == -1:
+            return json_str
+            
+        # Conta le parentesi graffe per trovare la fine del primo oggetto JSON valido
+        count = 0
+        in_string = False
+        escape = False
+        
+        for i, char in enumerate(json_str[start_idx:]):
+            if escape:
+                escape = False
+                continue
+                
+            if char == '\\':
+                escape = True
+                continue
+                
+            if char == '"' and not escape:
+                in_string = not in_string
+                continue
+                
+            if not in_string:
+                if char == '{':
+                    count += 1
+                elif char == '}':
+                    count -= 1
+                    if count == 0:
+                        # Abbiamo trovato la fine del primo oggetto JSON valido
+                        return json_str[start_idx:start_idx + i + 1]
+        
+        return json_str
+    except Exception as e:
+        st.error(f"Errore nella pulizia del JSON: {str(e)}")
+        return json_str
+
 def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict:
     """
     Appiattisce un oggetto JSON mantenendo una struttura pulita dei nomi delle colonne
@@ -30,13 +76,18 @@ def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict
             else:
                 items.update(flatten_json_object(v, new_key, sep=sep))
         elif isinstance(v, list):
-            # Per liste, converti in stringa se sono dati semplici
             if v and all(isinstance(x, (str, int, float)) for x in v):
                 items[new_key] = ', '.join(str(x) for x in v)
             else:
                 for i, item in enumerate(v):
                     if isinstance(item, dict):
-                        items.update(flatten_json_object(item, f"{new_key}{sep}{i}", sep=sep))
+                        if k == "liveBlogUpdate":
+                            # Gestione speciale per liveBlogUpdate
+                            flat_item = flatten_json_object(item)
+                            for sub_k, sub_v in flat_item.items():
+                                items[_clean_key(sub_k)] = sub_v
+                        else:
+                            items.update(flatten_json_object(item, f"{new_key}{sep}{i}", sep=sep))
         else:
             items[new_key] = v
             
@@ -46,13 +97,21 @@ def process_json_data(json_str: str) -> pd.DataFrame:
     """
     Processa il JSON e lo converte in DataFrame
     """
-    data = json.loads(json_str)
+    # Pulisci il JSON input
+    cleaned_json = clean_json_input(json_str)
+    
+    try:
+        data = json.loads(cleaned_json)
+    except json.JSONDecodeError as e:
+        st.error(f"Errore nel parsing JSON: {str(e)}")
+        st.code(cleaned_json[:1000])
+        raise
     
     # Gestisci diversi formati di input
     if isinstance(data, dict):
-        if "items" in data:  # Formato con items e pagination
+        if "items" in data:
             items = data["items"]
-        elif "liveBlogUpdate" in data:  # Formato liveblog
+        elif "liveBlogUpdate" in data:
             items = data["liveBlogUpdate"]
         else:
             items = [data]
@@ -70,7 +129,6 @@ def process_json_data(json_str: str) -> pd.DataFrame:
     # Pulisci i dati
     for col in df.columns:
         if df[col].dtype == object:
-            # Decodifica HTML entities
             df[col] = df[col].apply(lambda x: x.replace('&apos;', "'").replace('&quot;', '"') if isinstance(x, str) else x)
     
     # Riordina le colonne in modo logico
@@ -78,11 +136,8 @@ def process_json_data(json_str: str) -> pd.DataFrame:
                        'addressregion', 'addresscountry', 'province', 'headline', 
                        'articlebody', 'datepublished']
     
-    # Ottieni tutte le colonne presenti
     current_cols = list(df.columns)
-    # Ordina prima le colonne prioritarie (se presenti)
     ordered_cols = [col for col in priority_columns if col in current_cols]
-    # Aggiungi le colonne rimanenti
     ordered_cols.extend([col for col in current_cols if col not in ordered_cols])
     
     return df[ordered_cols]
@@ -92,11 +147,11 @@ def main():
     
     with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        Questo convertitore gestisce automaticamente:
-        - JSON con strutture annidate (address, geo, etc.)
+        Versione aggiornata che gestisce:
+        - JSON con dati extra
+        - Strutture nidificate
         - LiveBlog updates
-        - Array di oggetti
-        - Decodifica HTML entities
+        - Dati malformattati
         """)
     
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
@@ -111,7 +166,6 @@ def main():
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
-                # Download options
                 col1, col2 = st.columns(2)
                 
                 # CSV
@@ -138,7 +192,6 @@ def main():
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
-                # Statistiche
                 with st.expander("📊 Dettagli"):
                     st.write(f"Righe trovate: {len(df)}")
                     st.write(f"Colonne: {', '.join(df.columns)}")
