@@ -5,149 +5,100 @@ from io import BytesIO
 from typing import Union, List, Dict
 import re
 
-def deep_clean_json(json_str: str) -> str:
+def flatten_complete(obj: Union[Dict, List, str], parent_key: str = '', sep: str = '_') -> Dict:
     """
-    Pulizia approfondita del JSON per gestire casi problematici
+    Appiattisce completamente qualsiasi struttura JSON, inclusi i JSON nidificati nelle stringhe
     """
-    # Rimuove BOM e whitespace
-    json_str = json_str.strip().lstrip('\ufeff')
+    items = {}
     
-    # Cerca di trovare il primo oggetto JSON valido
-    try:
-        # Cerca l'inizio dell'oggetto o array JSON
-        start_curly = json_str.find('{')
-        start_square = json_str.find('[')
-        
-        # Prendi il primo carattere valido di inizio JSON
-        if start_curly == -1 and start_square == -1:
-            raise ValueError("Nessun JSON valido trovato")
-        
-        start = min(x for x in [start_curly, start_square] if x != -1)
-        json_str = json_str[start:]
-        
-        # Conta le parentesi per trovare la fine del JSON
-        stack = []
-        in_string = False
-        escape = False
-        end_pos = -1
-        
-        for i, char in enumerate(json_str):
-            if escape:
-                escape = False
-                continue
-                
-            if char == '\\':
-                escape = True
-                continue
-                
-            if char == '"' and not escape:
-                in_string = not in_string
-                continue
-                
-            if not in_string:
-                if char in '{[':
-                    stack.append(char)
-                elif char in '}]':
-                    if not stack:
-                        break
-                    opening = stack.pop()
-                    if (opening == '{' and char != '}') or (opening == '[' and char != ']'):
-                        break
-                    if not stack:  # Abbiamo trovato la fine del JSON
-                        end_pos = i + 1
-                        break
-        
-        if end_pos != -1:
-            json_str = json_str[:end_pos]
-        
-        # Verifica che sia un JSON valido
-        json.loads(json_str)
-        
-        return json_str
+    def try_parse_json(value):
+        """Prova a parsare una stringa come JSON"""
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except:
+                return value
+        return value
     
-    except Exception as e:
-        st.error(f"Errore durante la pulizia del JSON: {str(e)}")
-        return json_str
-
-def flatten_dict(d: Union[Dict, List], parent_key: str = '', sep: str = '_') -> Dict:
-    """
-    Appiattisce un dizionario o una lista annidata in un dizionario piatto.
-    """
-    items = []
-    
-    if isinstance(d, dict):
-        for k, v in d.items():
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            v = try_parse_json(v)
             new_key = f"{parent_key}{sep}{k}" if parent_key else k
             
             if isinstance(v, (dict, list)):
-                items.extend(flatten_dict(v, new_key, sep=sep).items())
+                items.update(flatten_complete(v, new_key, sep=sep))
             else:
-                items.append((new_key, v))
+                items[new_key] = v
                 
-    elif isinstance(d, list):
-        for i, v in enumerate(d):
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            v = try_parse_json(v)
             new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
             
             if isinstance(v, (dict, list)):
-                items.extend(flatten_dict(v, new_key, sep=sep).items())
+                items.update(flatten_complete(v, new_key, sep=sep))
             else:
-                items.append((new_key, v))
+                items[new_key] = v
     else:
-        items.append((parent_key, d))
-        
-    return dict(items)
+        obj = try_parse_json(obj)
+        if isinstance(obj, (dict, list)):
+            items.update(flatten_complete(obj, parent_key, sep=sep))
+        else:
+            items[parent_key] = obj
+            
+    return items
 
-def smart_flatten(data: Union[Dict, List]) -> pd.DataFrame:
+def clean_column_name(name: str) -> str:
+    """Pulisce e semplifica i nomi delle colonne"""
+    # Rimuove caratteri speciali e spazi
+    name = re.sub(r'[^\w\s-]', '', str(name))
+    # Sostituisce spazi con underscore
+    name = re.sub(r'[-\s]+', '_', name)
+    # Rimuove underscore multipli
+    name = re.sub(r'_+', '_', name)
+    return name.lower().strip('_')
+
+def create_dataframe(data: Union[Dict, List]) -> pd.DataFrame:
     """
-    Converte intelligentemente i dati in un DataFrame
+    Crea un DataFrame appiattito da qualsiasi struttura JSON
     """
-    # Se è una lista di dizionari, prova la conversione diretta
-    if isinstance(data, list) and all(isinstance(x, dict) for x in data):
-        try:
-            return pd.DataFrame(data)
-        except:
-            pass
+    if isinstance(data, list):
+        # Se è una lista di oggetti, appiattisci ogni elemento
+        flat_data = [flatten_complete(item) for item in data]
+    else:
+        # Se è un oggetto singolo, appiattiscilo
+        flat_data = [flatten_complete(data)]
     
-    # Se è un dizionario con una lista di dizionari
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if isinstance(value, list) and all(isinstance(x, dict) for x in value):
-                try:
-                    return pd.DataFrame(value)
-                except:
-                    continue
+    # Crea il DataFrame
+    df = pd.DataFrame(flat_data)
     
-    # Appiattimento completo come fallback
-    flattened = flatten_dict(data)
-    return pd.DataFrame([flattened])
+    # Pulisci i nomi delle colonne
+    df.columns = [clean_column_name(col) for col in df.columns]
+    
+    return df
 
 def main():
-    st.title("Convertitore JSON Universale")
+    st.title("Convertitore JSON Avanzato")
     
-    with st.expander("ℹ️ Guida all'uso"):
+    with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        1. **Incolla il tuo JSON** nel campo di testo
-        2. Il convertitore:
-           - Pulirà automaticamente il JSON
-           - Troverà la struttura più adatta
-           - Creerà una tabella dei dati
-        3. **Scarica** i risultati in CSV o Excel
+        Questo convertitore:
+        - Appiattisce completamente qualsiasi struttura JSON
+        - Gestisce JSON nidificati in stringhe
+        - Pulisce e semplifica i nomi delle colonne
+        - Esporta in CSV o Excel
         """)
     
-    # Area di testo per il JSON
     json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
     
     if st.button("Converti"):
         if json_input:
             try:
-                # Pulizia approfondita del JSON
-                cleaned_json = deep_clean_json(json_input)
+                # Parse del JSON
+                data = json.loads(json_input)
                 
-                # Parse del JSON pulito
-                data = json.loads(cleaned_json)
-                
-                # Conversione in DataFrame
-                df = smart_flatten(data)
+                # Creazione DataFrame completamente appiattito
+                df = create_dataframe(data)
                 
                 # Mostra anteprima
                 st.write("Anteprima della tabella:")
@@ -161,7 +112,7 @@ def main():
                 col1.download_button(
                     "📄 Scarica CSV",
                     data=csv,
-                    file_name="dati.csv",
+                    file_name="dati_appiattiti.csv",
                     mime="text/csv"
                 )
                 
@@ -174,20 +125,21 @@ def main():
                     col2.download_button(
                         "📊 Scarica Excel",
                         data=buffer.getvalue(),
-                        file_name="dati.xlsx",
+                        file_name="dati_appiattiti.xlsx",
                         mime="application/vnd.ms-excel"
                     )
                 except ImportError:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
                 # Statistiche
-                with st.expander("📊 Statistiche"):
-                    st.write(f"Righe: {len(df)}")
-                    st.write(f"Colonne: {len(df.columns)}")
+                with st.expander("📊 Dettagli"):
+                    st.write("Struttura dei dati:")
+                    for col in df.columns:
+                        st.write(f"- {col}: {df[col].dtype}")
                     
             except json.JSONDecodeError as e:
-                st.error(f"Errore JSON: {str(e)}")
-                st.code(cleaned_json[:500] + "..." if len(cleaned_json) > 500 else cleaned_json)
+                st.error(f"Errore nel parsing JSON: {str(e)}")
+                st.info("Verifica che il JSON sia valido")
             except Exception as e:
                 st.error(f"Errore: {str(e)}")
 
