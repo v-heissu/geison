@@ -2,128 +2,86 @@ import streamlit as st
 import json
 import pandas as pd
 from io import BytesIO
-from typing import Union, List, Dict
 import re
 
-def extract_valid_json(text: str) -> str:
+def fix_quotes(text: str) -> str:
     """
-    Estrae il primo JSON valido dal testo, ignorando caratteri non validi
-    """
-    # Cerca l'inizio di un oggetto o array JSON
-    start_patterns = ['{', '[']
-    end_patterns = ['}', ']']
-    
-    # Trova la prima occorrenza di un pattern di inizio valido
-    starts = [(text.find(p), p) for p in start_patterns if text.find(p) != -1]
-    if not starts:
-        raise ValueError("Nessun JSON valido trovato nel testo")
-    
-    start_pos, start_char = min(starts, key=lambda x: x[0])
-    
-    # Determina il carattere di chiusura corrispondente
-    end_char = end_patterns[start_patterns.index(start_char)]
-    
-    # Inizializza il contatore per le parentesi
-    count = 0
-    in_string = False
-    escape = False
-    
-    # Cerca la fine corrispondente
-    for i in range(start_pos, len(text)):
-        char = text[i]
-        
-        if escape:
-            escape = False
-            continue
-            
-        if char == '\\':
-            escape = True
-            continue
-            
-        if char == '"' and not escape:
-            in_string = not in_string
-            continue
-            
-        if not in_string:
-            if char == start_char:
-                count += 1
-            elif char == end_char:
-                count -= 1
-                if count == 0:
-                    # Abbiamo trovato la fine del JSON
-                    return text[start_pos:i+1]
-    
-    raise ValueError("JSON non valido o incompleto")
-
-def clean_json_text(text: str) -> str:
-    """
-    Pulisce il testo del JSON da caratteri problematici
+    Corregge i problemi di citazione nel JSON
     """
     # Rimuove BOM e whitespace
     text = text.strip().lstrip('\ufeff')
     
-    # Rimuove commenti se presenti
-    text = re.sub(r'//.*?\n|/\*.*?\*/', '', text, flags=re.S)
+    # Fix per citazioni multiple
+    text = re.sub(r'"{2,}', '"', text)  # Sostituisce citazioni multiple con singole
+    text = re.sub(r"'{2,}", "'", text)  # Sostituisce apostrofi multipli con singoli
     
-    # Prova a estrarre il JSON valido
-    try:
-        return extract_valid_json(text)
-    except ValueError as e:
-        st.error(f"Errore durante la pulizia del JSON: {str(e)}")
-        return text
+    # Gestisce il caso di citazioni alternate
+    text = re.sub(r'"([^"]*)"([^"]*)"', r'"\1\\"\2"', text)
+    
+    # Rimuove caratteri non-JSON all'inizio
+    text = re.sub(r'^[^{\[]+', '', text)
+    
+    # Rimuove caratteri non-JSON alla fine
+    text = re.sub(r'[^}\]]+$', '', text)
+    
+    return text
 
-def flatten_complete(obj: Union[Dict, List, str], parent_key: str = '', sep: str = '_') -> Dict:
+def normalize_json(text: str) -> str:
     """
-    Appiattisce completamente qualsiasi struttura JSON
+    Normalizza il JSON rimuovendo problemi comuni
+    """
+    # Rimuove caratteri di controllo
+    text = ''.join(ch for ch in text if ch >= ' ')
+    
+    # Corregge le citazioni
+    text = fix_quotes(text)
+    
+    # Corregge i valori null/None
+    text = re.sub(r':\s*null\b', ': null', text, flags=re.IGNORECASE)
+    text = re.sub(r':\s*none\b', ': null', text, flags=re.IGNORECASE)
+    
+    # Corregge i booleani
+    text = re.sub(r':\s*true\b', ': true', text, flags=re.IGNORECASE)
+    text = re.sub(r':\s*false\b', ': false', text, flags=re.IGNORECASE)
+    
+    return text
+
+def flatten_json(obj, parent_key='', sep='_'):
+    """
+    Appiattisce un oggetto JSON in un dizionario singolo livello
     """
     items = {}
     
-    def try_parse_json(value):
-        if isinstance(value, str):
-            try:
-                return json.loads(value)
-            except:
-                return value
-        return value
+    def add_item(key, value):
+        """Aggiunge un item al dizionario risultante"""
+        if isinstance(value, (dict, list)):
+            items.update(flatten_json(value, key, sep))
+        else:
+            items[key] = value
     
     if isinstance(obj, dict):
-        for k, v in obj.items():
-            v = try_parse_json(v)
-            new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            
-            if isinstance(v, (dict, list)):
-                items.update(flatten_complete(v, new_key, sep=sep))
-            else:
-                items[new_key] = v
+        for key, value in obj.items():
+            new_key = f"{parent_key}{sep}{key}" if parent_key else key
+            add_item(new_key, value)
     elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            v = try_parse_json(v)
+        for i, value in enumerate(obj):
             new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
-            
-            if isinstance(v, (dict, list)):
-                items.update(flatten_complete(v, new_key, sep=sep))
-            else:
-                items[new_key] = v
+            add_item(new_key, value)
     else:
-        obj = try_parse_json(obj)
-        if isinstance(obj, (dict, list)):
-            items.update(flatten_complete(obj, parent_key, sep=sep))
-        else:
-            items[parent_key] = obj
-    
+        items[parent_key] = obj
+        
     return items
 
 def main():
-    st.title("Convertitore JSON Universal Plus")
+    st.title("Convertitore JSON Ultra")
     
-    with st.expander("ℹ️ Come usare"):
+    with st.expander("ℹ️ Informazioni"):
         st.markdown("""
-        1. Incolla il tuo JSON (anche se contiene errori)
-        2. Il sistema:
-           - Rimuoverà automaticamente caratteri non validi
-           - Estrarrà il primo JSON valido trovato
-           - Convertirà tutto in formato tabellare
-        3. Scarica i risultati in CSV o Excel
+        Questo convertitore gestisce:
+        - Problemi di citazione
+        - JSON malformattato
+        - Strutture annidate
+        - Caratteri speciali
         """)
     
     # Area di testo per il JSON
@@ -132,21 +90,29 @@ def main():
     if st.button("Converti"):
         if json_input:
             try:
-                # Pulizia e estrazione del JSON valido
-                cleaned_json = clean_json_text(json_input)
+                # Normalizza e pulisci il JSON
+                cleaned_json = normalize_json(json_input)
                 
-                # Parse del JSON pulito
-                data = json.loads(cleaned_json)
+                # Debug view del JSON pulito
+                with st.expander("🔍 JSON Pulito"):
+                    st.code(cleaned_json)
                 
-                # Appiattimento e conversione in DataFrame
+                # Parse del JSON
+                try:
+                    data = json.loads(cleaned_json)
+                except Exception as e:
+                    st.error(f"Errore nel parsing JSON pulito: {str(e)}")
+                    st.stop()
+                
+                # Converti in DataFrame
                 if isinstance(data, list):
-                    flat_data = [flatten_complete(item) for item in data]
+                    flat_data = [flatten_json(item) for item in data]
                 else:
-                    flat_data = [flatten_complete(data)]
-                    
+                    flat_data = [flatten_json(data)]
+                
                 df = pd.DataFrame(flat_data)
                 
-                # Mostra anteprima
+                # Mostra preview
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
@@ -177,15 +143,15 @@ def main():
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
-                # Mostra JSON pulito in caso di debug
-                with st.expander("🔍 Debug"):
-                    st.code(cleaned_json)
+                # Statistiche
+                with st.expander("📊 Statistiche"):
+                    st.write(f"Righe: {len(df)}")
+                    st.write(f"Colonne: {len(df.columns)}")
+                    st.write("Tipi di dati:", df.dtypes.to_dict())
                 
-            except json.JSONDecodeError as e:
-                st.error(f"Errore nel parsing JSON: {str(e)}")
-                st.code(cleaned_json[:500] + "..." if len(cleaned_json) > 500 else cleaned_json)
             except Exception as e:
                 st.error(f"Errore: {str(e)}")
+                st.code(json_input[:500])
 
 if __name__ == "__main__":
     main()
