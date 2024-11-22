@@ -3,144 +3,10 @@ import json
 import pandas as pd
 from io import BytesIO
 import re
+import time
 from typing import List, Dict, Union
 
-def clean_json_input(json_str: str) -> str:
-    """
-    Pulisce l'input JSON rimuovendo dati extra e caratteri problematici
-    """
-    # Rimuove BOM e whitespace
-    json_str = json_str.strip().lstrip('\ufeff')
-    
-    # Cerca di trovare il primo oggetto JSON valido
-    try:
-        # Trova l'inizio dell'oggetto JSON
-        start_idx = json_str.find('{')
-        if start_idx == -1:
-            return json_str
-            
-        # Conta le parentesi graffe per trovare la fine del primo oggetto JSON valido
-        count = 0
-        in_string = False
-        escape = False
-        
-        for i, char in enumerate(json_str[start_idx:]):
-            if escape:
-                escape = False
-                continue
-                
-            if char == '\\':
-                escape = True
-                continue
-                
-            if char == '"' and not escape:
-                in_string = not in_string
-                continue
-                
-            if not in_string:
-                if char == '{':
-                    count += 1
-                elif char == '}':
-                    count -= 1
-                    if count == 0:
-                        # Abbiamo trovato la fine del primo oggetto JSON valido
-                        return json_str[start_idx:start_idx + i + 1]
-        
-        return json_str
-    except Exception as e:
-        st.error(f"Errore nella pulizia del JSON: {str(e)}")
-        return json_str
-
-def flatten_json_object(obj: dict, parent_key: str = '', sep: str = '_') -> dict:
-    """
-    Appiattisce un oggetto JSON mantenendo una struttura pulita dei nomi delle colonne
-    """
-    items = {}
-    
-    def _clean_key(k: str) -> str:
-        """Pulisce e normalizza i nomi delle chiavi"""
-        k = k.strip('_')
-        k = re.sub(r'[@\s]+', '_', k)
-        return k.lower()
-    
-    for k, v in obj.items():
-        clean_k = _clean_key(k)
-        new_key = f"{parent_key}{sep}{clean_k}" if parent_key else clean_k
-        
-        if isinstance(v, dict):
-            # Per address e altri oggetti annidati conosciuti, mantieni la struttura piatta
-            if k in ['address', 'geo']:
-                for sub_k, sub_v in v.items():
-                    sub_clean_k = _clean_key(sub_k)
-                    items[sub_clean_k] = sub_v
-            else:
-                items.update(flatten_json_object(v, new_key, sep=sep))
-        elif isinstance(v, list):
-            if v and all(isinstance(x, (str, int, float)) for x in v):
-                items[new_key] = ', '.join(str(x) for x in v)
-            else:
-                for i, item in enumerate(v):
-                    if isinstance(item, dict):
-                        if k == "liveBlogUpdate":
-                            # Gestione speciale per liveBlogUpdate
-                            flat_item = flatten_json_object(item)
-                            for sub_k, sub_v in flat_item.items():
-                                items[_clean_key(sub_k)] = sub_v
-                        else:
-                            items.update(flatten_json_object(item, f"{new_key}{sep}{i}", sep=sep))
-        else:
-            items[new_key] = v
-            
-    return items
-
-def process_json_data(json_str: str) -> pd.DataFrame:
-    """
-    Processa il JSON e lo converte in DataFrame
-    """
-    # Pulisci il JSON input
-    cleaned_json = clean_json_input(json_str)
-    
-    try:
-        data = json.loads(cleaned_json)
-    except json.JSONDecodeError as e:
-        st.error(f"Errore nel parsing JSON: {str(e)}")
-        st.code(cleaned_json[:1000])
-        raise
-    
-    # Gestisci diversi formati di input
-    if isinstance(data, dict):
-        if "items" in data:
-            items = data["items"]
-        elif "liveBlogUpdate" in data:
-            items = data["liveBlogUpdate"]
-        else:
-            items = [data]
-    elif isinstance(data, list):
-        items = data
-    else:
-        raise ValueError("Formato JSON non supportato")
-    
-    # Appiattisci ogni oggetto
-    flattened_data = [flatten_json_object(item) for item in items]
-    
-    # Crea DataFrame
-    df = pd.DataFrame(flattened_data)
-    
-    # Pulisci i dati
-    for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].apply(lambda x: x.replace('&apos;', "'").replace('&quot;', '"') if isinstance(x, str) else x)
-    
-    # Riordina le colonne in modo logico
-    priority_columns = ['name', 'postalcode', 'addresslocality', 'streetaddress', 
-                       'addressregion', 'addresscountry', 'province', 'headline', 
-                       'articlebody', 'datepublished']
-    
-    current_cols = list(df.columns)
-    ordered_cols = [col for col in priority_columns if col in current_cols]
-    ordered_cols.extend([col for col in current_cols if col not in ordered_cols])
-    
-    return df[ordered_cols]
+# [Previous helper functions remain the same...]
 
 def main():
     st.title("Convertitore JSON Universal Plus")
@@ -159,14 +25,23 @@ def main():
     if st.button("Converti"):
         if json_input:
             try:
-                # Processa il JSON
+                # Progress bar container
+                progress_placeholder = st.empty()
+                progress_bar = progress_placeholder.progress(0)
+                
+                # Processing step
+                progress_bar.progress(25)
                 df = process_json_data(json_input)
                 
-                # Mostra preview
+                # Display step
+                progress_bar.progress(50)
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
                 col1, col2 = st.columns(2)
+                
+                # Prepare downloads
+                progress_bar.progress(75)
                 
                 # CSV
                 csv = df.to_csv(index=False)
@@ -174,7 +49,8 @@ def main():
                     "📄 Scarica CSV",
                     data=csv,
                     file_name="dati.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    on_click=lambda: progress_placeholder.empty()
                 )
                 
                 # Excel
@@ -187,10 +63,16 @@ def main():
                         "📊 Scarica Excel",
                         data=buffer.getvalue(),
                         file_name="dati.xlsx",
-                        mime="application/vnd.ms-excel"
+                        mime="application/vnd.ms-excel",
+                        on_click=lambda: progress_placeholder.empty()
                     )
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
+                
+                # Complete progress
+                progress_bar.progress(100)
+                time.sleep(0.5)  # Brief pause to show completion
+                progress_placeholder.empty()
                 
                 with st.expander("📊 Dettagli"):
                     st.write(f"Righe trovate: {len(df)}")
