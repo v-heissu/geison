@@ -3,128 +3,122 @@ import json
 import pandas as pd
 from io import BytesIO
 import re
+from typing import List, Dict, Union, Tuple
 
-def extract_objects_from_text(text: str) -> str:
+def analyze_text_structure(text: str) -> Tuple[str, List[Dict]]:
     """
-    Estrae e formatta correttamente oggetti JSON da testo malformattato
+    Analizza la struttura del testo e identifica potenziali oggetti JSON
     """
-    # Rimuove spazi e caratteri iniziali/finali
+    # Pulisci il testo base
     text = text.strip().lstrip('\ufeff')
     
-    # Se il testo inizia con '[', cerca di sistemare l'array
-    if text.startswith('['):
-        try:
-            # Trova tutti gli oggetti che iniziano con {@type
-            objects = re.finditer(r'{"@type":[^}]+}', text)
-            valid_objects = []
+    # Pattern comuni in testo che dovrebbe essere JSON
+    common_patterns = {
+        'object_start': r'{[^}]*"@type"[^}]+}',
+        'key_value': r'"?([a-zA-Z@][a-zA-Z0-9_@]*)"?\s*:\s*([^,}\]]+)',
+        'quoted_string': r'"([^"\\]*(\\.[^"\\]*)*)"',
+        'single_quoted': r"'([^'\\]*(\\.[^'\\]*)*)'",
+    }
+    
+    def extract_structured_data(text: str) -> List[Dict]:
+        """Estrae dati strutturati dal testo"""
+        objects = []
+        current_object = {}
+        
+        # Cerca coppie chiave-valore
+        matches = re.finditer(common_patterns['key_value'], text)
+        for match in matches:
+            key, value = match.groups()
+            # Pulisci la chiave
+            key = key.strip('"\'')
+            # Pulisci il valore
+            value = value.strip()
+            if value.startswith('"') or value.startswith("'"):
+                value = value[1:-1] if value.endswith(value[0]) else value
+            # Aggiungi al dizionario
+            current_object[key] = value
             
-            for obj in objects:
-                try:
-                    # Pulisci l'oggetto
-                    clean_obj = obj.group()
-                    # Verifica che sia un JSON valido
-                    json.loads(clean_obj)
-                    valid_objects.append(clean_obj)
-                except:
-                    continue
-            
-            if valid_objects:
-                return f"[{','.join(valid_objects)}]"
-        except:
-            pass
-    
-    # Trova tutti i pattern che sembrano oggetti JSON
-    object_pattern = r'{[^}]+}'
-    potential_objects = re.finditer(object_pattern, text)
-    
-    valid_objects = []
-    for obj in potential_objects:
-        try:
-            # Pulisci l'oggetto
-            clean_obj = obj.group()
-            # Sistema le citazioni
-            clean_obj = re.sub(r'([{,]\s*)([a-zA-Z@_][a-zA-Z0-9@_]*)\s*:', r'\1"\2":', clean_obj)
-            # Sostituisci citazioni singole con doppie
-            clean_obj = clean_obj.replace("'", '"')
-            # Verifica che sia un JSON valido
-            json.loads(clean_obj)
-            valid_objects.append(clean_obj)
-        except:
-            continue
-    
-    if valid_objects:
-        return f"[{','.join(valid_objects)}]"
-    
-    raise ValueError("Nessun oggetto JSON valido trovato nel testo")
+            # Se troviamo un tipo, potrebbe essere un nuovo oggetto
+            if key == "@type" and current_object:
+                objects.append(current_object.copy())
+                current_object = {}
+        
+        if current_object:
+            objects.append(current_object)
+        
+        return objects
 
-def clean_json_text(text: str) -> str:
-    """
-    Pulisce e normalizza il testo JSON
-    """
-    # Sistema le citazioni delle proprietà
-    text = re.sub(r'([{,]\s*)([a-zA-Z@_][a-zA-Z0-9@_]*)\s*:', r'\1"\2":', text)
-    
-    # Sistema le citazioni dei valori
-    text = re.sub(r':\s*"([^"]*)"', r':"\1"', text)
-    text = re.sub(r':\s*\'([^\']*)\'', r':"\1"', text)
-    
-    # Sistema i valori speciali
-    text = re.sub(r':\s*(null|true|false)\b', lambda m: f':{m.group(1).lower()}', text, flags=re.IGNORECASE)
-    
-    # Rimuove spazi extra
-    text = re.sub(r'\s+', ' ', text)
-    
-    return text
+    def clean_extracted_objects(objects: List[Dict]) -> List[Dict]:
+        """Pulisce e normalizza gli oggetti estratti"""
+        cleaned = []
+        for obj in objects:
+            clean_obj = {}
+            for k, v in obj.items():
+                # Pulisci la chiave
+                clean_key = k.strip('"\'@')
+                # Pulisci il valore
+                if isinstance(v, str):
+                    v = v.strip('"\'')
+                    # Prova a convertire in tipi appropriati
+                    if v.lower() == 'null':
+                        v = None
+                    elif v.lower() == 'true':
+                        v = True
+                    elif v.lower() == 'false':
+                        v = False
+                    elif v.replace('.','').isdigit():
+                        try:
+                            v = float(v) if '.' in v else int(v)
+                        except:
+                            pass
+                clean_obj[clean_key] = v
+            cleaned.append(clean_obj)
+        return cleaned
 
-def parse_json_safely(text: str) -> dict:
-    """
-    Tenta di parsare il JSON in modo sicuro con multipli tentativi
-    """
-    try:
-        # Prima prova: parse diretto
-        return json.loads(text)
-    except:
-        try:
-            # Seconda prova: pulizia e parse
-            cleaned = clean_json_text(text)
-            return json.loads(cleaned)
-        except:
-            # Terza prova: estrazione oggetti
-            extracted = extract_objects_from_text(text)
-            return json.loads(extracted)
+    # Estrai dati strutturati
+    extracted_objects = extract_structured_data(text)
+    cleaned_objects = clean_extracted_objects(extracted_objects)
+    
+    # Crea JSON valido
+    json_str = json.dumps(cleaned_objects)
+    
+    return json_str, cleaned_objects
 
 def main():
-    st.title("Convertitore JSON Pro Max")
+    st.title("Convertitore JSON Smart")
     
-    with st.expander("ℹ️ Informazioni"):
+    with st.expander("ℹ️ Come funziona"):
         st.markdown("""
-        Versione avanzata che gestisce:
-        - JSON malformattato
-        - Array incompleti
-        - Oggetti consecutivi
-        - Citazioni miste
-        - Strutture complesse
+        Questo convertitore:
+        1. Analizza la struttura del testo input
+        2. Identifica oggetti e valori
+        3. Ricostruisce il JSON
+        4. Converte in tabella
+        
+        Funziona anche con JSON malformattato o testo semi-strutturato.
         """)
     
-    json_input = st.text_area("Incolla qui il tuo JSON:", height=200)
+    # Area input
+    json_input = st.text_area("Incolla qui il tuo testo:", height=200)
     
     if st.button("Converti"):
         if json_input:
             try:
-                # Step 1: Parse sicuro
-                data = parse_json_safely(json_input)
+                # Analizza e estrai i dati
+                json_str, extracted_data = analyze_text_structure(json_input)
                 
-                # Step 2: Converti in DataFrame
-                if isinstance(data, list):
-                    df = pd.json_normalize(data)
-                else:
-                    df = pd.json_normalize([data])
+                # Debug view
+                with st.expander("🔍 Dati Estratti"):
+                    st.code(json_str)
                 
-                # Mostra anteprima
+                # Crea DataFrame
+                df = pd.DataFrame(extracted_data)
+                
+                # Mostra risultati
                 st.write("Anteprima della tabella:")
                 st.dataframe(df)
                 
-                # Download buttons
+                # Download options
                 col1, col2 = st.columns(2)
                 
                 # CSV
@@ -151,17 +145,17 @@ def main():
                 except Exception:
                     st.warning("Export Excel non disponibile. Usa il CSV.")
                 
-                # Debug info
-                with st.expander("🔍 Debug Info"):
-                    st.write("JSON Structure:")
-                    st.json(data)
-                    
-                    st.write("Column Types:")
-                    st.write(df.dtypes.to_dict())
+                # Statistiche
+                with st.expander("📊 Dettagli"):
+                    st.write(f"Oggetti trovati: {len(extracted_data)}")
+                    st.write(f"Colonne identificate: {list(df.columns)}")
+                    st.write("Tipi di dati:")
+                    for col in df.columns:
+                        st.write(f"- {col}: {df[col].dtype}")
                 
             except Exception as e:
-                st.error(f"Errore nel processing: {str(e)}")
-                st.write("Debug del testo di input:")
+                st.error(f"Errore nell'elaborazione: {str(e)}")
+                st.write("Testo problematico:")
                 st.code(json_input[:1000])
 
 if __name__ == "__main__":
